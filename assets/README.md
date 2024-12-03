@@ -1,0 +1,1 @@
+ Clipboard icons created by Iconic Panda - Flaticon [clipboard icons](https://www.flaticon.com/free-icons/clipboard) 
