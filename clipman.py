@@ -31,16 +31,55 @@ logger = logging.getLogger(__name__)
 
 
 class TkFormatter():
+    """Custom formatter for syntax highlighting in Tkinter text widgets.
+    
+    This formatter is designed to work with Pygments to apply syntax highlighting
+    to text displayed in Tkinter widgets.
+    """
+    
     def __init__(self, text_widget, **options):
+        """Initialize the formatter with a text widget.
+        
+        Args:
+            text_widget: The Tkinter text widget to format.
+            **options: Additional formatting options.
+        """
         super().__init__(**options)
         self.text_widget = text_widget
         self.style = styles.get_style_by_name('default')
 
     def format(self, tokensource, outfile):
+        """Format the token source for output.
+        
+        Args:
+            tokensource: The source of syntax tokens to format.
+            outfile: The output file or stream.
+        """
         pass
 
 class ClipboardManager:
+    """Main application class for managing clipboard history.
+    
+    This class creates a GUI application that monitors the system clipboard,
+    maintains a history of copied items, and allows users to search, view,
+    and restore clipboard items.
+    
+    Attributes:
+        master: The root Tkinter window.
+        clipboard_list: Full list of clipboard history items.
+        filtered_list: Filtered list based on search query.
+        last_clipboard_data: The most recent clipboard content to avoid duplicates.
+    """
+    
     def __init__(self, master):
+        """Initialize the clipboard manager with UI components and monitoring thread.
+        
+        Args:
+            master: The root Tkinter window.
+            
+        Raises:
+            RuntimeError: If the clipboard monitoring thread fails to start.
+        """
         logger.info("Initializing ClipboardManager")
         self.master = master
         
@@ -94,7 +133,7 @@ class ClipboardManager:
             self.update_clipboard_thread.start()
             logger.info("Clipboard monitoring thread started successfully")
         except (RuntimeError, OSError) as e:
-            logger.critical(f"Failed to start clipboard monitoring thread: {e}", exc_info=True)
+            logger.critical("Failed to start clipboard monitoring thread: %s", e, exc_info=True)
             self.on_closing()
             self.master.destroy()
             raise RuntimeError(f"Failed to start clipboard monitoring thread: {e}")
@@ -102,6 +141,15 @@ class ClipboardManager:
         master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def update_clipboard(self):
+        """Continuously monitor the system clipboard for new content.
+        
+        This method runs in a background thread and polls the clipboard every 1-2 seconds.
+        It handles clipboard access failures gracefully, such as when the screen is locked
+        or another application is using the clipboard.
+        
+        The method will retry up to 60 times before giving up, allowing for temporary
+        access issues like screen locks.
+        """
         logger.info("Clipboard monitoring loop started")
         consecutive_failures = 0
         max_consecutive_failures = 60  # Allow for longer periods (e.g., screen locked)
@@ -124,16 +172,16 @@ class ClipboardManager:
                     or clipboard_data == self.last_clipboard_data
                 )
                 if not already_in_list and not clipboard_data == "":
-                    logger.debug(f"New clipboard item detected (length: {len(clipboard_data)} chars)")
+                    logger.debug("New clipboard item detected (length: %s chars)", len(clipboard_data))
                     self.clipboard_list.append(clipboard_data)
                     self.filtered_list.append(clipboard_data)
                     self.listbox.insert(tk.END, clipboard_data)
                     self.last_clipboard_data = clipboard_data
-                    logger.info(f"Added new clipboard item. Total items: {len(self.clipboard_list)}")
+                    logger.info("Added new clipboard item. Total items: %s", len(self.clipboard_list))
 
                 time.sleep(1)
                 
-            except pyperclip.PyperclipWindowsException as e:
+            except pyperclip.PyperclipWindowsException:
                 # Clipboard access blocked - common when screen is locked or another app is using clipboard
                 consecutive_failures += 1
                 
@@ -142,10 +190,10 @@ class ClipboardManager:
                     logger.info("Clipboard access blocked (screen may be locked or clipboard in use by another app)")
                     screen_locked_logged = True
                 elif consecutive_failures < 5:
-                    logger.debug(f"Clipboard temporarily blocked, will retry (attempt {consecutive_failures})")
+                    logger.debug("Clipboard temporarily blocked, will retry (attempt %s)", consecutive_failures)
                 
                 if consecutive_failures >= max_consecutive_failures:
-                    logger.error(f"Clipboard access failed {max_consecutive_failures} times consecutively, giving up", exc_info=True)
+                    logger.error("Clipboard access failed %s times consecutively, giving up", max_consecutive_failures, exc_info=True)
                     self.on_closing()
                     winsound.MessageBeep(winsound.MB_ICONHAND)
                     messagebox.showerror("Error", f"Unable to access clipboard after {max_consecutive_failures} attempts.")
@@ -158,7 +206,7 @@ class ClipboardManager:
                 
             except (OSError, RuntimeError) as e:
                 # These are more serious errors
-                logger.error(f"Critical error in clipboard monitoring loop: {e}", exc_info=True)
+                logger.error("Critical error in clipboard monitoring loop: %s", e, exc_info=True)
                 self.on_closing()
                 winsound.MessageBeep(winsound.MB_ICONHAND)
                 messagebox.showerror("Error", f"Critical error in clipboard monitoring: {e}")
@@ -166,19 +214,30 @@ class ClipboardManager:
                 break 
 
     def load_to_clipboard(self):
+        """Load the currently selected item back to the system clipboard.
+        
+        If an item is selected in the listbox, this copies it to the system clipboard.
+        Logs a warning if no item is selected.
+        """
         selected_index = self.listbox.curselection()
         if selected_index:
             selected_text = self.listbox.get(selected_index)
             pyperclip.copy(selected_text)
-            logger.info(f"Loaded item to clipboard (length: {len(selected_text)} chars)")
+            logger.info("Loaded item to clipboard (length: %s chars)", len(selected_text))
         else:
             logger.warning("Load to clipboard requested but no item selected")
 
     def remove_from_clipboard(self):
+        """Remove selected items from the clipboard history.
+        
+        Removes all selected items from both the clipboard_list and filtered_list,
+        updates the UI listbox, and clears the system clipboard. Logs a warning
+        if no items are selected.
+        """
         selected_indices = self.listbox.curselection()
         if selected_indices:
             removed_count = len(selected_indices)
-            logger.info(f"Removing {removed_count} item(s) from clipboard history")
+            logger.info("Removing %s item(s) from clipboard history", removed_count)
             for i in reversed(selected_indices):
                 selected_text = self.listbox.get(i)
                 self.clipboard_list.remove(selected_text)
@@ -186,19 +245,33 @@ class ClipboardManager:
                 self.listbox.delete(i)
             self.last_clipboard_data = ""
             pyperclip.copy("") # clear out the clipboard
-            logger.info(f"Removed {removed_count} item(s). Total items remaining: {len(self.clipboard_list)}")
+            logger.info("Removed %s item(s). Total items remaining: %s", removed_count, len(self.clipboard_list))
         else:
             logger.warning("Remove requested but no items selected")
 
     def filter_list(self, event):
+        """Filter the clipboard history based on the search bar input.
+        
+        Called whenever the search bar content changes. Performs case-insensitive
+        substring matching and updates the listbox to show only matching items.
+        
+        Args:
+            event: The Tkinter key release event that triggered this method.
+        """
         search_query = self.search_bar.get().lower()
         self.listbox.delete(0, tk.END)
         self.filtered_list = [item for item in self.clipboard_list if search_query in item.lower()]
         for item in self.filtered_list:
             self.listbox.insert(tk.END, item)
-        logger.debug(f"Filter applied: '{search_query}' - {len(self.filtered_list)} items match")
+        logger.debug("Filter applied: '%s' - %s items match", search_query, len(self.filtered_list))
 
     def load_clipboard_list(self):
+        """Load clipboard history from disk on application startup.
+        
+        Attempts to load the clipboard history from 'clipboard_data.pkl' if it exists.
+        If loading fails due to corruption or other errors, starts with an empty list.
+        Logs the result of the operation.
+        """
         if os.path.exists("clipboard_data.pkl"):
             try:
                 logger.info("Loading clipboard history from file")
@@ -207,34 +280,53 @@ class ClipboardManager:
                     self.filtered_list = self.clipboard_list.copy()
                     for item in self.clipboard_list:
                         self.listbox.insert(tk.END, item)
-                logger.info(f"Loaded {len(self.clipboard_list)} items from clipboard history")
+                logger.info("Loaded %s items from clipboard history", len(self.clipboard_list))
             except (pickle.PickleError, OSError) as e:
-                logger.error(f"Failed to load clipboard history: {e}", exc_info=True)
+                logger.error("Failed to load clipboard history: %s", e, exc_info=True)
                 self.clipboard_list = []
                 self.filtered_list = []
         else:
             logger.info("No existing clipboard history found, starting fresh")
 
     def save_clipboard_list(self):
+        """Save the current clipboard history to disk.
+        
+        Persists the clipboard_list to 'clipboard_data.pkl' using pickle serialization.
+        Logs success or failure of the operation.
+        """
         try:
-            logger.info(f"Saving clipboard history ({len(self.clipboard_list)} items)")
+            logger.info("Saving clipboard history (%s items)", len(self.clipboard_list))
             with open("clipboard_data.pkl", "wb") as f:
                 pickle.dump(self.clipboard_list, f)
             logger.info("Clipboard history saved successfully")
         except (pickle.PickleError, OSError) as e:
-            logger.error(f"Failed to save clipboard history: {e}", exc_info=True)
+            logger.error("Failed to save clipboard history: %s", e, exc_info=True)
 
     def on_closing(self):
+        """Handle application shutdown.
+        
+        Called when the user closes the main window. Saves the clipboard history
+        to disk and destroys the window gracefully.
+        """
         logger.info("Application closing, saving clipboard history")
         self.save_clipboard_list()
         self.master.destroy()
         logger.info("ClipboardManager shutdown complete")
 
     def open_item_in_new_window(self, event):
+        """Open the selected clipboard item in a new window for detailed viewing.
+        
+        Creates a new window with a scrollable text widget displaying the selected item.
+        If the content is valid JSON, it will be pretty-printed with indentation.
+        Includes a button to copy the item back to the clipboard.
+        
+        Args:
+            event: The Tkinter double-click event that triggered this method.
+        """
         selected_index = self.listbox.curselection()
         if selected_index:
             selected_text = self.listbox.get(selected_index)
-            logger.info(f"Opening item in new window (length: {len(selected_text)} chars)")
+            logger.info("Opening item in new window (length: %s chars)", len(selected_text))
             new_window = Toplevel(self.master)
             new_window.title("Clipboard Item")
             text_widget = ScrolledText(new_window, wrap=tk.WORD, background=self.bg_color, foreground=self.fg_color)
@@ -262,6 +354,18 @@ class ClipboardManager:
             #     text_widget.insert(tk.END, highlighted_content)
 
     def detect_lexer(self, text):
+        """Detect the appropriate syntax highlighter for the given text.
+        
+        Attempts to determine the programming language or format of the text
+        to select an appropriate Pygments lexer for syntax highlighting.
+        
+        Args:
+            text: The text content to analyze.
+            
+        Returns:
+            A Pygments lexer instance (JsonLexer, CLexer, or PythonLexer),
+            or None if the content type cannot be determined.
+        """
         try:
             json.loads(text)
             return JsonLexer()
@@ -277,6 +381,15 @@ class ClipboardManager:
         return None  # Default to plain text
 
 def main():
+    """Application entry point.
+    
+    Initializes the Tkinter root window, creates the ClipboardManager instance,
+    and starts the main event loop. Logs application startup, readiness, and
+    termination events.
+    
+    Raises:
+        Exception: Any unhandled exception is logged and re-raised.
+    """
     logger.info("Starting Clipman application")
     try:
         root = tk.Tk()
@@ -284,7 +397,7 @@ def main():
         logger.info("Application ready")
         root.mainloop()
     except Exception as e:
-        logger.critical(f"Unhandled exception in main: {e}", exc_info=True)
+        logger.critical("Unhandled exception in main: %s", e, exc_info=True)
         raise
     finally:
         logger.info("Application terminated")
