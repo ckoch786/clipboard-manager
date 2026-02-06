@@ -11,6 +11,7 @@ import pickle
 import os
 import json
 import logging
+import queue
 # TODO create a script to install Linux dependencies for Linux
 from pygments import highlight, styles
 from pygments.lexers import JsonLexer, PythonLexer, CLexer
@@ -145,6 +146,9 @@ class ClipboardManager:
         self.clipboard_list = []
         self.filtered_list = []
         self.last_clipboard_data = ""
+        
+        # Queue for thread-safe communication between clipboard thread and UI
+        self.clipboard_queue = queue.Queue()
 
         self.search_bar = Entry(master, bg=self.entry_bg_color, fg=self.fg_color, insertbackground=self.fg_color)
         self.search_bar.pack(side=tk.TOP, fill=tk.X)
@@ -187,6 +191,8 @@ class ClipboardManager:
             self.update_clipboard_thread.daemon = True
             self.update_clipboard_thread.start()
             logger.info("Clipboard monitoring thread started successfully")
+            # Start polling for clipboard updates on the main thread
+            self.poll_clipboard_queue()
         except (RuntimeError, OSError) as e:
             logger.critical("Failed to start clipboard monitoring thread: %s", e, exc_info=True)
             self.on_closing()
@@ -194,6 +200,34 @@ class ClipboardManager:
             raise RuntimeError(f"Failed to start clipboard monitoring thread: {e}")
 
         master.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def poll_clipboard_queue(self):
+        """Poll the clipboard queue and update UI on the main thread.
+        
+        This method runs on the main thread and checks for new clipboard items
+        from the background monitoring thread. It processes queue messages and
+        updates the UI safely.
+        """
+        try:
+            while True:
+                action, data = self.clipboard_queue.get_nowait()
+                if action == 'add_item':
+                    # Create item and add to list on main thread
+                    new_item = ClipboardItem(data)
+                    self.clipboard_list.append(new_item)
+                    
+                    # Add to filtered list if it matches current search
+                    search_query = self.search_bar.get().lower()
+                    if search_query == "" or search_query in data.lower():
+                        self.filtered_list.append(new_item)
+                    
+                    self.refresh_display()
+                    logger.info("Added new clipboard item. Total items: %s", len(self.clipboard_list))
+        except queue.Empty:
+            pass
+        
+        # Schedule next poll (every 100ms)
+        self.master.after(100, self.poll_clipboard_queue)
 
     def update_clipboard(self):
         """Continuously monitor the system clipboard for new content.
@@ -228,11 +262,11 @@ class ClipboardManager:
                 
                 if not already_in_list and not clipboard_data == "":
                     logger.debug("New clipboard item detected (length: %s chars)", len(clipboard_data))
-                    new_item = ClipboardItem(clipboard_data)
-                    self.clipboard_list.append(new_item)
-                    self.refresh_display()
+                    # Put item in queue - the main thread will add it to the list
+                    self.clipboard_queue.put(('add_item', clipboard_data))
+                    # Update last_clipboard_data immediately to prevent duplicates
                     self.last_clipboard_data = clipboard_data
-                    logger.info("Added new clipboard item. Total items: %s", len(self.clipboard_list))
+                    logger.info("Queued new clipboard item for UI thread")
 
                 time.sleep(1)
                 
