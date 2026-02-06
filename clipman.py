@@ -359,7 +359,9 @@ class ClipboardManager:
                     
                     self.filtered_list = self.clipboard_list.copy()
                     self.refresh_display()
-                logger.info("Loaded %s items from clipboard history", len(self.clipboard_list))
+                
+                pinned_count = sum(1 for item in self.clipboard_list if item.pinned)
+                logger.info("Loaded %s items from clipboard history (%s pinned)", len(self.clipboard_list), pinned_count)
             except (pickle.PickleError, OSError) as e:
                 logger.error("Failed to load clipboard history: %s", e, exc_info=True)
                 self.clipboard_list = []
@@ -374,7 +376,8 @@ class ClipboardManager:
         Logs success or failure of the operation.
         """
         try:
-            logger.info("Saving clipboard history (%s items)", len(self.clipboard_list))
+            pinned_count = sum(1 for item in self.clipboard_list if item.pinned)
+            logger.info("Saving clipboard history (%s items, %s pinned)", len(self.clipboard_list), pinned_count)
             with open("clipboard_data.pkl", "wb") as f:
                 pickle.dump(self.clipboard_list, f)
             logger.info("Clipboard history saved successfully")
@@ -465,8 +468,11 @@ class ClipboardManager:
             item = self.filtered_list[idx]
             item.pinned = not item.pinned
             status = "pinned" if item.pinned else "unpinned"
-            logger.info("Item %s", status)
+            item_preview = item.text[:50].replace('\n', ' ')
+            logger.info("Item %s: %s", status, item_preview)
             self.refresh_display()
+            # Auto-save after pinning to ensure persistence
+            self.save_clipboard_list()
         else:
             logger.warning("Toggle pin requested but no item selected")
 
@@ -499,6 +505,8 @@ class ClipboardManager:
                 item.name = new_name
                 logger.info("Item renamed to: '%s'", new_name if new_name else "(unnamed)")
                 self.refresh_display()
+                # Auto-save after renaming to ensure persistence
+                self.save_clipboard_list()
                 dialog.destroy()
             
             def cancel():
