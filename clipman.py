@@ -30,6 +30,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ClipboardItem:
+    """Represents a single clipboard history item.
+    
+    Attributes:
+        text: The clipboard text content.
+        pinned: Whether the item is pinned to the top of the list.
+        name: Optional custom name for the item.
+    """
+    
+    def __init__(self, text, pinned=False, name=''):
+        """Initialize a clipboard item.
+        
+        Args:
+            text: The clipboard text content.
+            pinned: Whether the item is pinned (default: False).
+            name: Optional custom name for the item (default: '').
+        """
+        self.text = text
+        self.pinned = pinned
+        self.name = name
+    
+    def __eq__(self, other):
+        """Compare items by text content.
+        
+        Args:
+            other: Another ClipboardItem or string to compare.
+            
+        Returns:
+            True if text content matches.
+        """
+        if isinstance(other, ClipboardItem):
+            return self.text == other.text
+        return self.text == other
+    
+    def __repr__(self):
+        """String representation for debugging."""
+        pin_status = "pinned" if self.pinned else "unpinned"
+        name_part = f" ({self.name})" if self.name else ""
+        return f"ClipboardItem({pin_status}{name_part}, {len(self.text)} chars)"
+
+
 class TkFormatter():
     """Custom formatter for syntax highlighting in Tkinter text widgets.
     
@@ -62,11 +103,11 @@ class ClipboardManager:
     
     This class creates a GUI application that monitors the system clipboard,
     maintains a history of copied items, and allows users to search, view,
-    and restore clipboard items.
+    restore, pin, and name clipboard items.
     
     Attributes:
         master: The root Tkinter window.
-        clipboard_list: Full list of clipboard history items.
+        clipboard_list: Full list of ClipboardItem objects.
         filtered_list: Filtered list based on search query.
         last_clipboard_data: The most recent clipboard content to avoid duplicates.
     """
@@ -100,6 +141,7 @@ class ClipboardManager:
 
         master.configure(bg=self.bg_color)
 
+        # Clipboard list stores ClipboardItem objects
         self.clipboard_list = []
         self.filtered_list = []
         self.last_clipboard_data = ""
@@ -112,6 +154,7 @@ class ClipboardManager:
         self.listbox = Listbox(master, bg=self.listbox_bg_color, fg=self.fg_color, selectmode=tk.EXTENDED)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.listbox.bind("<Double-1>", self.open_item_in_new_window)
+        self.listbox.bind("<Button-3>", self.show_context_menu)  # Right-click menu
 
         self.scrollbar = Scrollbar(master, orient="vertical", bg=self.scrollbar_bg_color)
         self.scrollbar.config(command=self.listbox.yview)
@@ -119,8 +162,20 @@ class ClipboardManager:
 
         self.listbox.config(yscrollcommand=self.scrollbar.set)
 
+        # Create context menu
+        self.context_menu = tk.Menu(master, tearoff=0, bg=self.button_bg_color, fg=self.fg_color)
+        self.context_menu.add_command(label="Pin/Unpin", command=self.toggle_pin)
+        self.context_menu.add_command(label="Rename", command=self.rename_item)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Load to Clipboard", command=self.load_to_clipboard)
+        self.context_menu.add_command(label="Remove", command=self.remove_from_clipboard)
+
         self.load_button = Button(master, text="Load to Clipboard", command=self.load_to_clipboard, bg=self.button_bg_color, fg=self.fg_color)
         self.load_button.pack(side=tk.BOTTOM, fill=tk.X)
+        self.pin_button = Button(master, text="Pin/Unpin", command=self.toggle_pin, bg=self.button_bg_color, fg=self.fg_color)
+        self.pin_button.pack(side=tk.BOTTOM, fill=tk.X)
+        self.rename_button = Button(master, text="Rename", command=self.rename_item, bg=self.button_bg_color, fg=self.fg_color)
+        self.rename_button.pack(side=tk.BOTTOM, fill=tk.X)
         self.remove_button = Button(master, text="Remove", command=self.remove_from_clipboard, bg=self.button_bg_color, fg=self.fg_color)
         self.remove_button.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -166,16 +221,16 @@ class ClipboardManager:
                     consecutive_failures = 0
                     screen_locked_logged = False
                 
-                already_in_list = (
-                    self.clipboard_list.__contains__(clipboard_data)
-                    or self.filtered_list.__contains__(clipboard_data)
-                    or clipboard_data == self.last_clipboard_data
-                )
+                # Check if clipboard data already exists
+                already_in_list = any(
+                    item.text == clipboard_data for item in self.clipboard_list
+                ) or clipboard_data == self.last_clipboard_data
+                
                 if not already_in_list and not clipboard_data == "":
                     logger.debug("New clipboard item detected (length: %s chars)", len(clipboard_data))
-                    self.clipboard_list.append(clipboard_data)
-                    self.filtered_list.append(clipboard_data)
-                    self.listbox.insert(tk.END, clipboard_data)
+                    new_item = ClipboardItem(clipboard_data)
+                    self.clipboard_list.append(new_item)
+                    self.refresh_display()
                     self.last_clipboard_data = clipboard_data
                     logger.info("Added new clipboard item. Total items: %s", len(self.clipboard_list))
 
@@ -221,9 +276,10 @@ class ClipboardManager:
         """
         selected_index = self.listbox.curselection()
         if selected_index:
-            selected_text = self.listbox.get(selected_index)
-            pyperclip.copy(selected_text)
-            logger.info("Loaded item to clipboard (length: %s chars)", len(selected_text))
+            idx = selected_index[0]
+            item = self.filtered_list[idx]
+            pyperclip.copy(item.text)
+            logger.info("Loaded item to clipboard (length: %s chars)", len(item.text))
         else:
             logger.warning("Load to clipboard requested but no item selected")
 
@@ -238,13 +294,15 @@ class ClipboardManager:
         if selected_indices:
             removed_count = len(selected_indices)
             logger.info("Removing %s item(s) from clipboard history", removed_count)
-            for i in reversed(selected_indices):
-                selected_text = self.listbox.get(i)
-                self.clipboard_list.remove(selected_text)
-                self.filtered_list.remove(selected_text)
-                self.listbox.delete(i)
+            items_to_remove = [self.filtered_list[i] for i in selected_indices]
+            for item in items_to_remove:
+                if item in self.clipboard_list:
+                    self.clipboard_list.remove(item)
+                if item in self.filtered_list:
+                    self.filtered_list.remove(item)
+            self.refresh_display()
             self.last_clipboard_data = ""
-            pyperclip.copy("") # clear out the clipboard
+            pyperclip.copy("")  # clear out the clipboard
             logger.info("Removed %s item(s). Total items remaining: %s", removed_count, len(self.clipboard_list))
         else:
             logger.warning("Remove requested but no items selected")
@@ -259,10 +317,11 @@ class ClipboardManager:
             event: The Tkinter key release event that triggered this method.
         """
         search_query = self.search_bar.get().lower()
-        self.listbox.delete(0, tk.END)
-        self.filtered_list = [item for item in self.clipboard_list if search_query in item.lower()]
-        for item in self.filtered_list:
-            self.listbox.insert(tk.END, item)
+        self.filtered_list = [
+            item for item in self.clipboard_list 
+            if search_query in item.text.lower() or search_query in item.name.lower()
+        ]
+        self.refresh_display()
         logger.debug("Filter applied: '%s' - %s items match", search_query, len(self.filtered_list))
 
     def load_clipboard_list(self):
@@ -270,16 +329,36 @@ class ClipboardManager:
         
         Attempts to load the clipboard history from 'clipboard_data.pkl' if it exists.
         If loading fails due to corruption or other errors, starts with an empty list.
+        Supports migration from old string format to new dict format.
         Logs the result of the operation.
         """
         if os.path.exists("clipboard_data.pkl"):
             try:
                 logger.info("Loading clipboard history from file")
                 with open("clipboard_data.pkl", "rb") as f:
-                    self.clipboard_list = pickle.load(f)
+                    loaded_data = pickle.load(f)
+                    
+                    # Migrate old formats to ClipboardItem objects
+                    if loaded_data:
+                        if isinstance(loaded_data[0], str):
+                            # Old format: list of strings
+                            logger.info("Migrating old string format to ClipboardItem format")
+                            self.clipboard_list = [ClipboardItem(item) for item in loaded_data]
+                        elif isinstance(loaded_data[0], dict):
+                            # Dict format: convert to ClipboardItem
+                            logger.info("Migrating dict format to ClipboardItem format")
+                            self.clipboard_list = [
+                                ClipboardItem(item['text'], item['pinned'], item['name'])
+                                for item in loaded_data
+                            ]
+                        else:
+                            # Already ClipboardItem objects
+                            self.clipboard_list = loaded_data
+                    else:
+                        self.clipboard_list = []
+                    
                     self.filtered_list = self.clipboard_list.copy()
-                    for item in self.clipboard_list:
-                        self.listbox.insert(tk.END, item)
+                    self.refresh_display()
                 logger.info("Loaded %s items from clipboard history", len(self.clipboard_list))
             except (pickle.PickleError, OSError) as e:
                 logger.error("Failed to load clipboard history: %s", e, exc_info=True)
@@ -325,10 +404,14 @@ class ClipboardManager:
         """
         selected_index = self.listbox.curselection()
         if selected_index:
-            selected_text = self.listbox.get(selected_index)
+            idx = selected_index[0]
+            item = self.filtered_list[idx]
+            selected_text = item.text
+            item_name = item.name if item.name else "Clipboard Item"
+            
             logger.info("Opening item in new window (length: %s chars)", len(selected_text))
             new_window = Toplevel(self.master)
-            new_window.title("Clipboard Item")
+            new_window.title(item_name)
             text_widget = ScrolledText(new_window, wrap=tk.WORD, background=self.bg_color, foreground=self.fg_color)
             try:
                 json_data = json.loads(selected_text)
@@ -352,6 +435,125 @@ class ClipboardManager:
             # else:
             #     highlighted_content = highlight(selected_text, lexer, TkFormatter(text_widget))
             #     text_widget.insert(tk.END, highlighted_content)
+
+    def show_context_menu(self, event):
+        """Display the context menu on right-click.
+        
+        Args:
+            event: The Tkinter mouse button event.
+        """
+        try:
+            # Select the item under the cursor
+            index = self.listbox.nearest(event.y)
+            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_set(index)
+            self.listbox.activate(index)
+            
+            # Show context menu
+            self.context_menu.post(event.x_root, event.y_root)
+        finally:
+            self.context_menu.grab_release()
+
+    def toggle_pin(self):
+        """Toggle the pinned status of the selected item.
+        
+        Pinned items appear at the top of the list with a pin indicator.
+        """
+        selected_index = self.listbox.curselection()
+        if selected_index:
+            idx = selected_index[0]
+            item = self.filtered_list[idx]
+            item.pinned = not item.pinned
+            status = "pinned" if item.pinned else "unpinned"
+            logger.info("Item %s", status)
+            self.refresh_display()
+        else:
+            logger.warning("Toggle pin requested but no item selected")
+
+    def rename_item(self):
+        """Prompt the user to rename the selected clipboard item.
+        
+        Opens a dialog to enter a custom name for the item.
+        """
+        selected_index = self.listbox.curselection()
+        if selected_index:
+            idx = selected_index[0]
+            item = self.filtered_list[idx]
+            
+            # Create a simple dialog for renaming
+            dialog = Toplevel(self.master)
+            dialog.title("Rename Item")
+            dialog.geometry("400x150")
+            dialog.configure(bg=self.bg_color)
+            
+            label = tk.Label(dialog, text="Enter a name for this item:", bg=self.bg_color, fg=self.fg_color)
+            label.pack(pady=10)
+            
+            entry = Entry(dialog, bg=self.entry_bg_color, fg=self.fg_color, insertbackground=self.fg_color, width=50)
+            entry.insert(0, item.name)
+            entry.pack(pady=5)
+            entry.focus()
+            
+            def save_name():
+                new_name = entry.get().strip()
+                item.name = new_name
+                logger.info("Item renamed to: '%s'", new_name if new_name else "(unnamed)")
+                self.refresh_display()
+                dialog.destroy()
+            
+            def cancel():
+                dialog.destroy()
+            
+            entry.bind("<Return>", lambda e: save_name())
+            entry.bind("<Escape>", lambda e: cancel())
+            
+            button_frame = tk.Frame(dialog, bg=self.bg_color)
+            button_frame.pack(pady=10)
+            
+            save_btn = Button(button_frame, text="Save", command=save_name, bg=self.button_bg_color, fg=self.fg_color, width=10)
+            save_btn.pack(side=tk.LEFT, padx=5)
+            
+            cancel_btn = Button(button_frame, text="Cancel", command=cancel, bg=self.button_bg_color, fg=self.fg_color, width=10)
+            cancel_btn.pack(side=tk.LEFT, padx=5)
+            
+            # Make dialog modal
+            dialog.transient(self.master)
+            dialog.grab_set()
+        else:
+            logger.warning("Rename requested but no item selected")
+
+    def refresh_display(self):
+        """Refresh the listbox display with current filtered list.
+        
+        Sorts items to show pinned items first, then displays them with
+        appropriate formatting including pin indicators and custom names.
+        """
+        # Sort: pinned items first, then unpinned
+        sorted_list = sorted(self.filtered_list, key=lambda x: (not x.pinned, self.filtered_list.index(x)))
+        self.filtered_list = sorted_list
+        
+        # Clear and repopulate listbox
+        self.listbox.delete(0, tk.END)
+        for item in self.filtered_list:
+            display_text = self._format_display_text(item)
+            self.listbox.insert(tk.END, display_text)
+
+    def _format_display_text(self, item):
+        """Format an item for display in the listbox.
+        
+        Args:
+            item: ClipboardItem object.
+            
+        Returns:
+            Formatted string for display.
+        """
+        pin_indicator = "📌 " if item.pinned else ""
+        name_part = f"[{item.name}] " if item.name else ""
+        # Truncate long text for display
+        text_preview = item.text.replace('\n', ' ')[:100]
+        if len(item.text) > 100:
+            text_preview += "..."
+        return f"{pin_indicator}{name_part}{text_preview}"
 
     def detect_lexer(self, text):
         """Detect the appropriate syntax highlighter for the given text.
