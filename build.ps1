@@ -4,7 +4,7 @@ if (Test-Path .\dist) {
 }
 
 # Build
-pyinstaller '.\clipman.py' `
+python -m PyInstaller '.\clipman.py' `
     --icon .\assets\clipboard.png `
     #--windowed `
     #--add-data ".\assets\clipboard.png:.\assets\clipboard.png"
